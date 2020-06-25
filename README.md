@@ -22,3 +22,11 @@ To avoid messing with the changes of the database structure I decided to combine
 We have already tested the resulting changes on our students (educa.isu.ru), and the code works Ok.
 
 I believe, that the unique in group capability will be useful for other teachers, who use Moodle.
+
+The repository contains two folders:
+
+New - the files, that were modified to support the "Unique in group" capability
+
+Old - the state of the files before I have modified them (just in case that the files were modified for some other purposes since my editing)
+
+
