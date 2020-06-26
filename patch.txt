@@ -1,0 +1,179 @@
+--- mod/quiz/classes/form/randomquestion_form.php	Sat May 16 08:50:33 2020
++++ mod/quiz/classes/form/randomquestion_form.php	Tue May 26 17:41:28 2020
+@@ -53,6 +53,7 @@
+                 array('contexts' => $usablecontexts, 'top' => true));
+ 
+         $mform->addElement('advcheckbox', 'includesubcategories', get_string('recurse', 'quiz'), null, null, array(0, 1));
++        $mform->addElement('advcheckbox', 'uniqueingroup', 'Unique in group'/*get_string('uniqueingroup', 'quiz') !!!todo: add this string to lang*/, null, null, array(0, 1));
+ 
+         $tops = question_get_top_categories_for_contexts(array_column($contexts->all(), 'id'));
+         $mform->hideIf('includesubcategories', 'category', 'in', $tops);
+--- mod/quiz/classes/question/qubaids_for_users_attempts.php	Sat May 16 08:50:33 2020
++++ mod/quiz/classes/question/qubaids_for_users_attempts.php	Tue May 26 23:18:32 2020
+@@ -44,10 +44,12 @@
+      * @param string $status 'all', 'finished' or 'unfinished' to control
+      * @param bool $includepreviews defaults to false.
+      */
+-    public function __construct($quizid, $userid, $status = 'finished', $includepreviews = false) {
+-        $where = 'quiza.quiz = :quizaquiz AND quiza.userid = :userid';
++    public function __construct($quizid, $userid, $status = 'finished', $includepreviews = false, $uniqueingroup = false) {
++        if ($uniqueingroup) //We count all the question usages of this user in any quiz and that of any user in this quiz in any state
++          $where = 'quiza.userid = :userid';
++        else
++          $where = 'quiza.quiz = :quizaquiz AND quiza.userid = :userid';
+         $params = array('quizaquiz' => $quizid, 'userid' => $userid);
+-
+         if (!$includepreviews) {
+             $where .= ' AND preview = 0';
+         }
+@@ -68,7 +70,8 @@
+                 $params['state2'] = \quiz_attempt::OVERDUE;
+                 break;
+         }
+-
++        if ($uniqueingroup) //We count all the question usages of this user in any quiz and that of any user in this quiz in any state
++            $where = '('. $where .' OR quiza.quiz = :quizaquiz)'; 
+         parent::__construct('{quiz_attempts} quiza', 'quiza.uniqueid', $where, $params);
+     }
+ }
+--- mod/quiz/addrandom.php	Sat May 16 08:50:33 2020
++++ mod/quiz/addrandom.php	Mon Jun 01 14:52:08 2020
+@@ -101,6 +101,7 @@
+         throw new coding_exception(
+                 'It seems a form was submitted without any button being pressed???');
+     }
++    $uniqueingroup = $data->uniqueingroup;
+ 
+     if (empty($data->fromtags)) {
+         $data->fromtags = [];
+@@ -110,7 +111,7 @@
+         return (int)explode(',', $tagstrings)[0];
+     }, $data->fromtags);
+ 
+-    quiz_add_random_questions($quiz, $addonpage, $categoryid, $data->numbertoadd, $includesubcategories, $tagids);
++    quiz_add_random_questions($quiz, $addonpage, $categoryid, $data->numbertoadd, $includesubcategories, $tagids, $uniqueingroup);
+     quiz_delete_previews($quiz);
+     quiz_update_sumgrades($quiz);
+     redirect($returnurl);
+--- mod/quiz/addrandomform.php	Sat May 16 08:50:33 2020
++++ mod/quiz/addrandomform.php	Tue May 26 17:50:08 2020
+@@ -54,6 +54,7 @@
+         $mform->setDefault('category', $this->_customdata['cat']);
+ 
+         $mform->addElement('checkbox', 'includesubcategories', '', get_string('recurse', 'quiz'));
++        $mform->addElement('checkbox', 'uniqueingroup', '','Unique in group'/*get_string('uniqueingroup', 'quiz') !!!todo: add this string to lang*/);
+ 
+         $tops = question_get_top_categories_for_contexts(array_column($contexts->all(), 'id'));
+         $mform->hideIf('includesubcategories', 'category', 'in', $tops);
+--- mod/quiz/attemptlib.php	Sat May 16 08:50:33 2020
++++ mod/quiz/attemptlib.php	Wed May 27 12:02:54 2020
+@@ -151,6 +151,10 @@
+                  slot.includingsubcategories AS randomincludingsubcategories',
+                 '{quiz_slots} slot ON slot.quizid = :quizid AND q.id = slot.questionid',
+                 array('quizid' => $this->quiz->id), 'slot.slot');
++        foreach ($this->questions as $question) {
++           $question->randomuniqueingroup = ($question->randomincludingsubcategories>>1) & 1;
++           $question->randomincludingsubcategories &= 1; //clear uniqueingroup flag
++        }
+     }
+ 
+     /**
+@@ -711,6 +715,10 @@
+         $this->slots = $DB->get_records('quiz_slots',
+                 array('quizid' => $this->get_quizid()), 'slot',
+                 'slot, id, requireprevious, questionid, includingsubcategories');
++        foreach ($this->slots as $slot) {
++           $slot->uniqueingroup = ($slot->includingsubcategories>>1) & 1;
++           $slot->includingsubcategories &= 1; 
++        }
+         $this->sections = array_values($DB->get_records('quiz_sections',
+                 array('quizid' => $this->get_quizid()), 'firstslot'));
+ 
+@@ -2080,7 +2088,7 @@
+         }
+ 
+         $qubaids = new \mod_quiz\question\qubaids_for_users_attempts(
+-                $this->get_quizid(), $this->get_userid(), 'all', true);
++                $this->get_quizid(), $this->get_userid(), 'all', true/*$includepreviews*/, $this->slots[$slot]->uniqueingroup);
+ 
+         $transaction = $DB->start_delegated_transaction();
+ 
+--- mod/quiz/editrandom.php	Sat May 16 08:50:33 2020
++++ mod/quiz/editrandom.php	Tue May 26 17:45:57 2020
+@@ -76,7 +76,8 @@
+ // Send the question object and a few more parameters to the form.
+ $toform = fullclone($question);
+ $toform->category = "{$category->id},{$category->contextid}";
+-$toform->includesubcategories = $slot->includingsubcategories;
++$toform->includesubcategories = $slot->includingsubcategories & 1;
++$toform->uniqueingroup = ($slot->includingsubcategories>>1) & 1;
+ $toform->fromtags = array();
+ $currentslottags = quiz_retrieve_slot_tags($slot->id);
+ foreach ($currentslottags as $slottag) {
+@@ -113,7 +114,7 @@
+ 
+     // We need to save some data into the quiz_slots table.
+     $slot->questioncategoryid = $fromform->category;
+-    $slot->includingsubcategories = $fromform->includesubcategories;
++    $slot->includingsubcategories = $fromform->includesubcategories&1 | ($fromform->uniqueingroup&1)<<1;
+ 
+     $DB->update_record('quiz_slots', $slot);
+ 
+--- mod/quiz/locallib.php	Sat May 16 08:50:33 2020
++++ mod/quiz/locallib.php	Mon Jun 01 14:54:00 2020
+@@ -200,6 +200,7 @@
+             }
+         }
+         $randomloader = new \core_question\bank\random_question_loader($qubaids, $usedquestionids);
++        $randomloadergr = null;
+ 
+         foreach ($quizobj->get_questions() as $questiondata) {
+             $slot += 1;
+@@ -208,10 +209,18 @@
+             }
+ 
+             $tagids = quiz_retrieve_slot_tag_ids($questiondata->slotid);
+-
++            $currentrandomloader = $randomloader;
++            if ($questiondata->randomuniqueingroup) {
++                if (!$randomloadergr) {
++                    $qubaidsgr = new \mod_quiz\question\qubaids_for_users_attempts(
++                           $quizobj->get_quizid(), $attempt->userid, 'all' /*$status*/, false /*$includepreviews*/, true/*$uniqueingroup*/);
++                    $randomloadergr = new \core_question\bank\random_question_loader($qubaidsgr, $usedquestionids);
++                }
++                $currentrandomloader = $randomloadergr;
++            }
+             // Deal with fixed random choices for testing.
+             if (isset($questionids[$quba->next_slot_number()])) {
+-                if ($randomloader->is_question_available($questiondata->category,
++                if ($currentrandomloader->is_question_available($questiondata->category,
+                         (bool) $questiondata->questiontext, $questionids[$quba->next_slot_number()], $tagids)) {
+                     $questions[$slot] = question_bank::load_question(
+                             $questionids[$quba->next_slot_number()], $quizobj->get_quiz()->shuffleanswers);
+@@ -222,7 +231,7 @@
+             }
+ 
+             // Normal case, pick one at random.
+-            $questionid = $randomloader->get_next_question_id($questiondata->randomfromcategory,
++            $questionid = $currentrandomloader->get_next_question_id($questiondata->randomfromcategory,
+                     $questiondata->randomincludingsubcategories, $tagids);
+             if ($questionid === null) {
+                 throw new moodle_exception('notenoughrandomquestions', 'quiz',
+@@ -2247,7 +2256,7 @@
+  * @param int[] $tagids Array of tagids. The question that will be picked randomly should be tagged with all these tags.
+  */
+ function quiz_add_random_questions($quiz, $addonpage, $categoryid, $number,
+-        $includesubcategories, $tagids = []) {
++        $includesubcategories, $tagids = [], $uniqueingroup=0) {
+     global $DB;
+ 
+     $category = $DB->get_record('question_categories', array('id' => $categoryid));
+@@ -2299,7 +2308,7 @@
+         $randomslotdata->quizid = $quiz->id;
+         $randomslotdata->questionid = $question->id;
+         $randomslotdata->questioncategoryid = $categoryid;
+-        $randomslotdata->includingsubcategories = $includesubcategories ? 1 : 0;
++        $randomslotdata->includingsubcategories = ($includesubcategories ? 1 : 0)|($uniqueingroup ? 2 : 0);
+         $randomslotdata->maxmark = 1;
+ 
+         $randomslot = new \mod_quiz\local\structure\slot_random($randomslotdata);
