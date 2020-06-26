@@ -15,8 +15,8 @@ by adding the $uniqueingroup parameter. When $uniqueingroup is true it now count
 
 I have also changed some other PHP files to be able to edit, save and pass the $uniqueingroup attribute (total 7 files changed).
 
-To avoid messing with the changes of the database structure I decided to combine the $uniqueingroup attribute with the $includepreviews attribute. Now the field includepreviews of the table mdl_quiz_slots is considered as a combination of the bit flags
-($1 - includepreviews, $2 - uniqueingroup)
+To avoid messing with the changes of the database structure I decided to combine the $uniqueingroup attribute with the $includesubcategories attribute. Now the field includingsubcategories of the table mdl_quiz_slots is considered as a combination of the bit flags
+(0x1 - includesubcategories, 0x2 - uniqueingroup)
 (it was 0..1 before, so the new code will correctly work with the existing database).
 
 We have already tested the resulting changes on our students (educa.isu.ru), and the code works Ok.
